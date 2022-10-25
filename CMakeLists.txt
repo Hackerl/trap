@@ -22,7 +22,7 @@ FetchContent_MakeAvailable(zydis)
 FetchContent_Declare(
         zero
         GIT_REPOSITORY https://github.com/Hackerl/zero
-        GIT_TAG master
+        GIT_TAG 22525f041a6d2eb4ae727be7a61fd57e2b6f32f9
 )
 
 FetchContent_MakeAvailable(zero)
