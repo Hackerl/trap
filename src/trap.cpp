@@ -1,7 +1,8 @@
 #include <trap/trap.h>
 #include <Zydis/Zydis.h>
-#include <zero/log.h>
 #include <sys/mman.h>
+#include <cstring>
+#include <memory>
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE       0x1000
@@ -21,65 +22,59 @@ constexpr unsigned char JUMP_TEMPLATE[] = {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
-constexpr auto GUIDE = 6;
-constexpr auto JUMP_SIZE = sizeof(JUMP_TEMPLATE);
+constexpr auto JUMP_GUIDE = 6;
+constexpr auto TRAMPOLINE_SIZE = sizeof(JUMP_TEMPLATE);
 
-static int setProtection(void *address, size_t length, int protection) {
-    uintptr_t start = TRUNC_PG((uintptr_t)address);
-    uintptr_t end = ROUND_PG((uintptr_t)address + length);
+static bool setProtection(void *address, size_t length, int protection) {
+    uintptr_t start = TRUNC_PG((uintptr_t) address);
+    uintptr_t end = ROUND_PG((uintptr_t) address + length);
 
-    if (mprotect((void *)start, end - start, protection) < 0) {
-        LOG_ERROR("change memory protection failed: %s", strerror(errno));
-        return -1;
-    }
-
-    return 0;
+    return mprotect((void *) start, end - start, protection) == 0;
 }
 
-int hook(void *address, void *replace, void **backup) {
-    ZydisDecoder decoder = {};
+int trap_hook(void *address, void *replace, void **backup) {
+    ZydisDecoder decoder;
 
-    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_ADDRESS_WIDTH_64))) {
-        LOG_ERROR("init decoder failed");
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64)))
         return -1;
-    }
 
-    ZydisDecodedInstruction instruction = {};
-    ZyanUSize length = ZYDIS_MAX_INSTRUCTION_LENGTH + JUMP_SIZE;
+    ZydisDecodedInstruction instruction;
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
 
-    unsigned int tail = 0;
+    size_t pos = 0;
 
     do {
-        if (!ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoder, (char *)address + tail, length - tail, &instruction))) {
-            LOG_ERROR("decode buffer failed");
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+                &decoder,
+                (std::byte *) address + pos,
+                ZYDIS_MAX_INSTRUCTION_LENGTH + TRAMPOLINE_SIZE - pos,
+                &instruction, operands
+        )))
             return -1;
-        }
 
-        if (instruction.attributes & ZYDIS_ATTRIB_IS_RELATIVE) {
-            LOG_ERROR("position relative instruction: %p", (char *)address + tail);
+        if (instruction.attributes & ZYDIS_ATTRIB_IS_RELATIVE)
             return -1;
-        }
 
-        tail += instruction.length;
-    } while (tail < JUMP_SIZE);
+        pos += instruction.length;
+    } while (pos < TRAMPOLINE_SIZE);
 
-    std::unique_ptr<char> escape(new char[tail + JUMP_SIZE]());
+    std::unique_ptr<std::byte[]> escape = std::make_unique<std::byte[]>(pos + TRAMPOLINE_SIZE);
 
-    if (setProtection(escape.get(), tail + JUMP_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
+    if (!setProtection(escape.get(), pos + TRAMPOLINE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC))
         return -1;
 
-    memcpy(escape.get(), address, tail);
-    memcpy(escape.get() + tail, JUMP_TEMPLATE, JUMP_SIZE);
+    memcpy(escape.get(), address, pos);
+    memcpy(escape.get() + pos, JUMP_TEMPLATE, TRAMPOLINE_SIZE);
 
-    *(void **)(escape.get() + tail + GUIDE) = (char *)address + tail;
+    *(void **) (escape.get() + pos + JUMP_GUIDE) = (std::byte *) address + pos;
 
-    if (setProtection(address, JUMP_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
+    if (!setProtection(address, TRAMPOLINE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC))
         return -1;
 
-    memcpy(address, JUMP_TEMPLATE, JUMP_SIZE);
-    *(void **)((char *)address + GUIDE) = replace;
+    memcpy(address, JUMP_TEMPLATE, TRAMPOLINE_SIZE);
+    *(void **) ((std::byte *) address + JUMP_GUIDE) = replace;
 
-    if (setProtection(address, JUMP_SIZE, PROT_READ | PROT_EXEC) < 0)
+    if (!setProtection(address, TRAMPOLINE_SIZE, PROT_READ | PROT_EXEC))
         return -1;
 
     *backup = escape.release();
@@ -87,19 +82,17 @@ int hook(void *address, void *replace, void **backup) {
     return 0;
 }
 
-int unhook(void *address, void *backup) {
-    if (memcmp(address, JUMP_TEMPLATE, GUIDE) != 0) {
-        LOG_ERROR("invalid trap magic");
-        return -1;
-    }
-
-    if (setProtection(address, JUMP_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
+int trap_unhook(void *address, void *backup) {
+    if (memcmp(address, JUMP_TEMPLATE, JUMP_GUIDE) != 0)
         return -1;
 
-    memcpy(address, backup, JUMP_SIZE);
-    delete [](char *)backup;
+    if (!setProtection(address, TRAMPOLINE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC))
+        return -1;
 
-    if (setProtection(address, JUMP_SIZE, PROT_READ | PROT_EXEC) < 0)
+    memcpy(address, backup, TRAMPOLINE_SIZE);
+    delete[](std::byte *) backup;
+
+    if (!setProtection(address, TRAMPOLINE_SIZE, PROT_READ | PROT_EXEC))
         return -1;
 
     return 0;

@@ -5,8 +5,8 @@
 extern "C" {
 #endif
 
-int hook(void *address, void *replace, void **backup);
-int unhook(void *address, void *backup);
+int trap_hook(void *address, void *replace, void **backup);
+int trap_unhook(void *address, void *backup);
 
 #ifdef __cplusplus
 }
