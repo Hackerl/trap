@@ -35,20 +35,18 @@ static bool setProtection(void *address, size_t length, int protection) {
 int trap_hook(void *address, void *replace, void **backup) {
     ZydisDecoder decoder;
 
-    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64)))
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_ADDRESS_WIDTH_64)))
         return -1;
 
-    ZydisDecodedInstruction instruction;
-    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
-
     size_t pos = 0;
+    ZydisDecodedInstruction instruction;
 
     do {
-        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(
                 &decoder,
                 (std::byte *) address + pos,
                 ZYDIS_MAX_INSTRUCTION_LENGTH + TRAMPOLINE_SIZE - pos,
-                &instruction, operands
+                &instruction
         )))
             return -1;
 
